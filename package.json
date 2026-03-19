@@ -1,0 +1,27 @@
+{
+  "name": "qa-tickets-app",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "frontend": "npm run dev --workspace frontend",
+    "backend": "npm run dev --workspace backend",
+    "db:init": "npm run db:init --workspace backend",
+    "lint": "eslint .",
+    "test:unit": "npm run test:unit --workspace backend",
+    "test:api": "playwright test --config=playwright.api.config.js",
+    "test:e2e": "playwright test --config=playwright.e2e.config.js",
+    "test:all": "npm run test:unit && npm run test:api && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.23.0",
+    "@playwright/test": "^1.52.0",
+    "eslint": "^9.23.0",
+    "eslint-plugin-react": "^7.37.4",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.0.0"
+  }
+}
