@@ -72,3 +72,34 @@ test('filtrar tickets', async ({ page }) => {
   await expect(list.getByText('Validar filtros por prioridad')).toBeVisible();
   await expect(list.getByText('Actualizar texto de ayuda')).toHaveCount(0);
 });
+
+// test('editar ticket desde la interfaz', async ({ page }) => {
+// await login(page);
+// // Seleccionar ticket
+// await page.getByText('Actualizar texto de ayuda').click();
+// // Abrir edición
+// await page.getByRole('button', { name: /Editar/i }).click();
+
+// // Modificar campos
+// const form = page.getByRole('region', { name: /Formulario/i });
+// await form.getByLabel('Titulo').fill('Titulo editado');
+// await form.getByLabel('Prioridad').selectOption('Baja');
+
+// // Guardar
+// await page.getByRole('button', { name: 'Guardar cambios' }).click();
+
+// // Verificar
+// await expect(page.getByText('Ticket actualizado correctamente.')).toBeVisible();
+// await expect(page.getByText('Titulo editado')).toBeVisible();
+// })
+
+test('eliminar ticket muestra confirmación y actualiza lista', async ({ page }) => {
+await login(page);
+await page.getByText('Error al iniciar sesion').click();
+
+page.on('dialog', dialog => dialog.accept());
+await page.getByRole('button', { name: /Eliminar/i }).click();
+
+await expect(page.getByText('Ticket eliminado correctamente.')).toBeVisible();
+await expect(page.getByText('Error al iniciar sesion')).toHaveCount(0);
+});
