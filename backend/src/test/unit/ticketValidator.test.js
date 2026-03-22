@@ -62,4 +62,27 @@ describe('ticketValidator', () => {
     expect(result.isValid).toBe(true);
     expect(result.sanitized.estado).toBe('Resuelto');
   });
+
+    test('rechaza ticket sin responsable', () => {
+    const result = validateTicketPayload({
+      titulo: 'Test',
+      descripcion: 'Test',
+      prioridad: 'Alta',
+      responsable: ' ',
+    });
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toContain('El responsable es obligatorio.');
+  });
+
+  test('rechaza ticket sin descripción', () => {
+    const result = validateTicketPayload({
+      titulo: 'Test',
+      descripcion: ' ',
+      prioridad: 'Alta',
+      responsable: 'Pedro',
+    });
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toContain('La descripcion es obligatoria.');
+  });
+
 });
