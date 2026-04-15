@@ -1,0 +1,375 @@
+# ============================================================
+# Azure DevOps CI Pipeline — qa_tickets_app
+# ============================================================
+# Etapas:
+#   1. Install        → instala dependencias (raíz + workspaces)
+#   2. Lint           → ESLint en todo el proyecto
+#   3. Unit Tests     → Jest (backend)
+#   4. Build          → Vite build del frontend
+#   5. API Tests      → Playwright (levanta backend primero)
+#   6. E2E Tests      → Playwright con Chromium (full stack)
+#   7. Publish        → artefactos: build del frontend + reportes
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - feature/*
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+variables:
+  NODE_VERSION: '20.x'
+  PLAYWRIGHT_BROWSERS_PATH: '$(Pipeline.Workspace)/.cache/playwright'
+  # Habilita el endpoint de reset usado por las pruebas
+  ENABLE_TEST_ENDPOINTS: 'true'
+  # URLs locales para los procesos levantados en pipeline
+  BACKEND_URL: 'http://localhost:3000'
+  FRONTEND_URL: 'http://localhost:5173'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 1: Instalar dependencias
+# ─────────────────────────────────────────────────────────────
+- stage: Install
+  displayName: '📦 Instalar Dependencias'
+  jobs:
+  - job: Install
+    displayName: 'npm ci (raíz + workspaces)'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Usar Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: '$(NODE_VERSION)'
+
+    # Cache de node_modules para acelerar ejecuciones futuras
+    - task: Cache@2
+      displayName: 'Cache node_modules'
+      inputs:
+        key: 'npm | "$(Agent.OS)" | package-lock.json'
+        restoreKeys: |
+          npm | "$(Agent.OS)"
+        path: |
+          node_modules
+          frontend/node_modules
+          backend/node_modules
+
+    - script: npm ci
+      displayName: 'npm ci (instala todos los workspaces)'
+
+    # Cache de browsers Playwright
+    - task: Cache@2
+      displayName: 'Cache Playwright browsers'
+      inputs:
+        key: 'playwright | "$(Agent.OS)" | node_modules/@playwright/test/package.json'
+        restoreKeys: |
+          playwright | "$(Agent.OS)"
+        path: '$(PLAYWRIGHT_BROWSERS_PATH)'
+
+    - script: npx playwright install chromium --with-deps
+      displayName: 'Instalar Chromium para Playwright'
+
+    # Publicar node_modules como artefacto de pipeline para las etapas siguientes
+    - publish: '$(System.DefaultWorkingDirectory)'
+      artifact: 'repo-with-deps'
+      displayName: 'Publicar repo con dependencias'
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 2: Lint
+# ─────────────────────────────────────────────────────────────
+- stage: Lint
+  displayName: '🔍 Lint'
+  dependsOn: Install
+  jobs:
+  - job: Lint
+    displayName: 'ESLint'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Usar Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: '$(NODE_VERSION)'
+
+    - download: current
+      artifact: 'repo-with-deps'
+      displayName: 'Descargar repo con dependencias'
+
+    - script: |
+        cp -r $(Pipeline.Workspace)/repo-with-deps/. $(System.DefaultWorkingDirectory)/
+      displayName: 'Restaurar workspace'
+
+    - script: npm run lint
+      displayName: 'Ejecutar ESLint'
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 3: Unit Tests (Jest — backend)
+# ─────────────────────────────────────────────────────────────
+- stage: UnitTests
+  displayName: '🧪 Unit Tests'
+  dependsOn: Lint
+  jobs:
+  - job: UnitTests
+    displayName: 'Jest — Backend'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Usar Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: '$(NODE_VERSION)'
+
+    - download: current
+      artifact: 'repo-with-deps'
+      displayName: 'Descargar repo con dependencias'
+
+    - script: |
+        cp -r $(Pipeline.Workspace)/repo-with-deps/. $(System.DefaultWorkingDirectory)/
+      displayName: 'Restaurar workspace'
+
+    - script: npm run test:unit
+      displayName: 'Correr pruebas unitarias (Jest)'
+      env:
+        NODE_ENV: test
+
+    # Publicar resultados de Jest si genera JUnit XML
+    # Requiere jest-junit como devDependency en backend/package.json
+    # Si no está configurado, este paso se omite sin romper el pipeline
+    - task: PublishTestResults@2
+      displayName: 'Publicar resultados Jest (JUnit)'
+      condition: always()
+      continueOnError: true
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/junit-unit.xml'
+        testRunTitle: 'Unit Tests'
+        mergeTestResults: true
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 4: Build Frontend (Vite)
+# ─────────────────────────────────────────────────────────────
+- stage: Build
+  displayName: '🏗️ Build Frontend'
+  dependsOn: UnitTests
+  jobs:
+  - job: BuildFrontend
+    displayName: 'Vite Build'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Usar Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: '$(NODE_VERSION)'
+
+    - download: current
+      artifact: 'repo-with-deps'
+      displayName: 'Descargar repo con dependencias'
+
+    - script: |
+        cp -r $(Pipeline.Workspace)/repo-with-deps/. $(System.DefaultWorkingDirectory)/
+      displayName: 'Restaurar workspace'
+
+    - script: npm run build --workspace frontend
+      displayName: 'Vite build (producción)'
+      env:
+        VITE_API_URL: '$(BACKEND_URL)'
+
+    # Publicar el artefacto del build para deployment posterior
+    - publish: '$(System.DefaultWorkingDirectory)/frontend/dist'
+      artifact: 'frontend-dist'
+      displayName: 'Publicar artefacto frontend/dist'
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 5: API Tests (Playwright)
+# ─────────────────────────────────────────────────────────────
+- stage: APITests
+  displayName: '🌐 API Tests'
+  dependsOn: Build
+  jobs:
+  - job: APITests
+    displayName: 'Playwright — API'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Usar Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: '$(NODE_VERSION)'
+
+    - download: current
+      artifact: 'repo-with-deps'
+      displayName: 'Descargar repo con dependencias'
+
+    - script: |
+        cp -r $(Pipeline.Workspace)/repo-with-deps/. $(System.DefaultWorkingDirectory)/
+      displayName: 'Restaurar workspace'
+
+    - task: Cache@2
+      displayName: 'Cache Playwright browsers'
+      inputs:
+        key: 'playwright | "$(Agent.OS)" | node_modules/@playwright/test/package.json'
+        restoreKeys: |
+          playwright | "$(Agent.OS)"
+        path: '$(PLAYWRIGHT_BROWSERS_PATH)'
+
+    - script: npx playwright install chromium --with-deps
+      displayName: 'Instalar Chromium'
+
+    # Inicializar la base de datos SQLite con seed
+    - script: npm run db:init
+      displayName: 'Inicializar SQLite + seed'
+      env:
+        ENABLE_TEST_ENDPOINTS: 'true'
+
+    # Levantar backend en background
+    - script: |
+        npm run backend &
+        echo "Esperando que el backend esté listo..."
+        npx wait-on $(BACKEND_URL)/api/tickets --timeout 30000
+      displayName: 'Levantar backend y esperar'
+      env:
+        PORT: 3000
+        ENABLE_TEST_ENDPOINTS: 'true'
+
+    - script: npm run test:api
+      displayName: 'Ejecutar pruebas API (Playwright)'
+      env:
+        BASE_URL: '$(BACKEND_URL)'
+
+    - task: PublishTestResults@2
+      displayName: 'Publicar resultados API Tests'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/playwright-api-results.xml'
+        testRunTitle: 'API Tests'
+        mergeTestResults: true
+
+    - publish: '$(System.DefaultWorkingDirectory)/playwright-report'
+      artifact: 'playwright-api-report'
+      displayName: 'Publicar reporte HTML API Tests'
+      condition: always()
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 6: E2E Tests (Playwright + Chromium)
+# ─────────────────────────────────────────────────────────────
+- stage: E2ETests
+  displayName: '🎭 E2E Tests'
+  dependsOn: APITests
+  jobs:
+  - job: E2ETests
+    displayName: 'Playwright E2E — Full Stack'
+    steps:
+
+    - task: NodeTool@0
+      displayName: 'Usar Node.js $(NODE_VERSION)'
+      inputs:
+        versionSpec: '$(NODE_VERSION)'
+
+    - download: current
+      artifact: 'repo-with-deps'
+      displayName: 'Descargar repo con dependencias'
+
+    - script: |
+        cp -r $(Pipeline.Workspace)/repo-with-deps/. $(System.DefaultWorkingDirectory)/
+      displayName: 'Restaurar workspace'
+
+    - task: Cache@2
+      displayName: 'Cache Playwright browsers'
+      inputs:
+        key: 'playwright | "$(Agent.OS)" | node_modules/@playwright/test/package.json'
+        restoreKeys: |
+          playwright | "$(Agent.OS)"
+        path: '$(PLAYWRIGHT_BROWSERS_PATH)'
+
+    - script: npx playwright install chromium --with-deps
+      displayName: 'Instalar Chromium'
+
+    # Inicializar DB limpia para E2E
+    - script: npm run db:init
+      displayName: 'Inicializar SQLite + seed (E2E)'
+      env:
+        ENABLE_TEST_ENDPOINTS: 'true'
+
+    # Levantar backend
+    - script: |
+        npm run backend &
+        npx wait-on $(BACKEND_URL)/api/tickets --timeout 30000
+        echo "Backend listo ✓"
+      displayName: 'Levantar backend'
+      env:
+        PORT: 3000
+        ENABLE_TEST_ENDPOINTS: 'true'
+
+    # Levantar frontend (Vite preview sobre el build)
+    - script: |
+        npx vite preview --port 5173 --outDir dist &
+        npx wait-on $(FRONTEND_URL) --timeout 30000
+        echo "Frontend listo ✓"
+      displayName: 'Levantar frontend (vite preview)'
+      workingDirectory: '$(System.DefaultWorkingDirectory)/frontend'
+      env:
+        VITE_API_URL: '$(BACKEND_URL)'
+
+    - script: npm run test:e2e
+      displayName: 'Ejecutar pruebas E2E (Playwright)'
+      env:
+        BASE_URL: '$(FRONTEND_URL)'
+
+    - task: PublishTestResults@2
+      displayName: 'Publicar resultados E2E Tests'
+      condition: always()
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/playwright-e2e-results.xml'
+        testRunTitle: 'E2E Tests'
+        mergeTestResults: true
+
+    - publish: '$(System.DefaultWorkingDirectory)/playwright-report'
+      artifact: 'playwright-e2e-report'
+      displayName: 'Publicar reporte HTML E2E Tests'
+      condition: always()
+
+
+# ─────────────────────────────────────────────────────────────
+# STAGE 7: Publicar Artefactos Finales
+# ─────────────────────────────────────────────────────────────
+- stage: Publish
+  displayName: '📤 Publicar Artefactos'
+  dependsOn: E2ETests
+  condition: succeeded()
+  jobs:
+  - job: Summary
+    displayName: 'Artefactos listos para deploy'
+    steps:
+
+    - download: current
+      artifact: 'frontend-dist'
+      displayName: 'Descargar build del frontend'
+
+    - script: |
+        echo "=============================================="
+        echo "  Pipeline completado exitosamente ✅"
+        echo "=============================================="
+        echo ""
+        echo "Artefactos disponibles:"
+        echo "  • frontend-dist  → build de producción (Vite)"
+        echo "  • playwright-api-report  → reporte pruebas API"
+        echo "  • playwright-e2e-report  → reporte pruebas E2E"
+        echo ""
+        echo "Para desplegar, conecta la siguiente etapa"
+        echo "al artefacto 'frontend-dist'."
+      displayName: 'Resumen del pipeline'
